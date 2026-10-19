@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rupiah Live Calculator</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #1b1f24; --muted: #667085;
+    --border: #e3e6eb; --accent: #c8102e; --up: #12805c; --down: #c8102e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --card: #171a21; --text: #e8eaed; --muted: #9aa3b2;
+      --border: #2a2f3a; --accent: #ff4d5e; --up: #3ccf91; --down: #ff6b78;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: .9rem; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 14px; padding: 18px; margin-bottom: 16px;
+  }
+  label { display: block; font-size: .8rem; color: var(--muted); margin-bottom: 6px; }
+  .row { display: flex; gap: 8px; align-items: stretch; }
+  input, select, button {
+    font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+  }
+  input { flex: 1; min-width: 0; font-size: 1.2rem; }
+  select { width: 120px; }
+  button { cursor: pointer; }
+  .swap { display: flex; justify-content: center; margin: 10px 0; }
+  .result { font-size: 1.8rem; font-weight: 600; word-break: break-all; }
+  .rate { color: var(--muted); margin-top: 6px; font-size: .9rem; }
+  .status { display: flex; align-items: center; gap: 8px; font-size: .85rem; color: var(--muted); flex-wrap: wrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.live { background: var(--up); animation: pulse 2s infinite; }
+  .dot.err { background: var(--down); }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .up { color: var(--up); } .down { color: var(--down); }
+  .flash { animation: flash .8s; }
+  @keyframes flash { from { background: color-mix(in srgb, var(--accent) 18%, transparent); } }
+  table { width: 100%; border-collapse: collapse; font-size: .95rem; }
+  td, th { padding: 8px 4px; border-bottom: 1px solid var(--border); text-align: left; }
+  th { color: var(--muted); font-weight: 500; font-size: .8rem; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  svg { width: 100%; height: 60px; display: block; }
+  .small { font-size: .8rem; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Rupiah Live Calculator</h1>
+  <p class="sub">Converts between Indonesian Rupiah (IDR) and other currencies, refreshing the rate automatically.</p>
+
+  <section class="card">
+    <label for="amount" id="fromLabel">Amount</label>
+    <div class="row">
+      <input id="amount" type="text" inputmode="decimal" value="1" autocomplete="off">
+      <select id="fromSel"></select>
+    </div>
+    <div class="swap"><button id="swapBtn" title="Swap direction">⇅ Swap</button></div>
+    <label>Converted</label>
+    <div class="row" style="align-items:center">
+      <div class="result" id="result" style="flex:1">–</div>
+      <select id="toSel"></select>
+    </div>
+    <div class="rate" id="rateLine">Loading rate…</div>
+  </section>
+
+  <section class="card">
+    <div class="status">
+      <span class="dot" id="dot"></span>
+      <span id="statusText">Connecting…</span>
+      <span>·</span>
+      <label style="display:inline;margin:0">Refresh every
+        <select id="interval" style="width:auto;padding:4px 8px">
+          <option value="15">15s</option>
+          <option value="30" selected>30s</option>
+          <option value="60">1 min</option>
+          <option value="300">5 min</option>
+        </select>
+      </label>
+      <button id="refreshBtn" style="padding:4px 10px">Refresh now</button>
+    </div>
+    <svg id="spark" viewBox="0 0 300 60" preserveAspectRatio="none" aria-label="Rate history this session"></svg>
+    <div class="small" id="sparkLabel">Rate history builds up while this page is open.</div>
+  </section>
+
+  <section class="card">
+    <table>
+      <thead><tr><th>Currency</th><th class="num">1 unit = IDR</th><th class="num">Change</th></tr></thead>
+      <tbody id="board"></tbody>
+    </table>
+    <p class="small" id="source"></p>
+  </section>
+</main>
+
+<script>
+// Rates are stored as "IDR per 1 unit of currency".
+const CURRENCIES = {
+  USD: "US Dollar", EUR: "Euro", SGD: "Singapore Dollar", MYR: "Malaysian Ringgit",
+  AUD: "Australian Dollar", JPY: "Japanese Yen", GBP: "British Pound", CNY: "Chinese Yuan",
+  SAR: "Saudi Riyal", KRW: "South Korean Won", HKD: "Hong Kong Dollar", THB: "Thai Baht",
+  INR: "Indian Rupee", PHP: "Philippine Peso", AED: "UAE Dirham", CHF: "Swiss Franc",
+  CAD: "Canadian Dollar", NZD: "New Zealand Dollar", TWD: "Taiwan Dollar", VND: "Vietnamese Dong"
+};
+const BOARD = ["USD", "EUR", "SGD", "MYR", "AUD", "JPY", "GBP", "CNY", "SAR"];
+
+// Sources tried in order. Coinbase refreshes fiat rates every minute or so;
+// open.er-api.com is a daily fallback.
+const SOURCES = [
+  {
+    name: "Coinbase",
+    url: "https://api.coinbase.com/v2/exchange-rates?currency=IDR",
+    parse: j => {
+      const out = {};
+      for (const [c, v] of Object.entries(j.data.rates)) out[c] = 1 / parseFloat(v);
+      return { rates: out, asOf: null };
+    }
+  },
+  {
+    name: "ExchangeRate-API",
+    url: "https://open.er-api.com/v6/latest/IDR",
+    parse: j => {
+      if (j.result !== "success") throw new Error("bad response");
+      const out = {};
+      for (const [c, v] of Object.entries(j.rates)) out[c] = 1 / v;
+      return { rates: out, asOf: new Date(j.time_last_update_unix * 1000) };
+    }
+  }
+];
+
+const $ = id => document.getElementById(id);
+const state = { rates: null, prev: null, history: [], timer: null, source: null };
+
+const store = {
+  get(k, d) { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} }
+};
+
+function fillSelects() {
+  const codes = ["IDR", ...Object.keys(CURRENCIES)];
+  for (const sel of [$("fromSel"), $("toSel")]) {
+    sel.innerHTML = codes.map(c => `<option value="${c}">${c}</option>`).join("");
+  }
+  $("fromSel").value = store.get("from", "USD");
+  $("toSel").value = store.get("to", "IDR");
+  $("interval").value = store.get("interval", "30");
+  ensureIdrSide();
+}
+
+// One side must always be IDR.
+function ensureIdrSide(changed) {
+  const f = $("fromSel"), t = $("toSel");
+  if (f.value !== "IDR" && t.value !== "IDR") {
+    (changed === f ? t : f).value = "IDR";
+  }
+  if (f.value === "IDR" && t.value === "IDR") {
+    (changed === f ? t : f).value = "USD";
+  }
+}
+
+function parseAmount() {
+  // Accept "1.000.000,5" (Indonesian) and "1,000,000.5" (English) styles.
+  let s = $("amount").value.trim().replace(/\s/g, "");
+  if (!s) return NaN;
+  const lastDot = s.lastIndexOf("."), lastComma = s.lastIndexOf(",");
+  if (lastComma > lastDot) s = s.replace(/\./g, "").replace(",", ".");
+  else if ((s.match(/\./g) || []).length > 1) s = s.replace(/\./g, "");
+  else s = s.replace(/,/g, "");
+  return parseFloat(s);
+}
+
+function fmt(n, code) {
+  const digits = code === "IDR" || code === "JPY" || code === "KRW" || code === "VND"
+    ? (Math.abs(n) < 1 ? 4 : 0)
+    : (Math.abs(n) < 0.01 ? 8 : 2);
+  return new Intl.NumberFormat("id-ID", { maximumFractionDigits: digits, minimumFractionDigits: Math.min(digits, 2) }).format(n);
+}
+
+function rateOf(code) { return code === "IDR" ? 1 : state.rates?.[code]; }
+
+function render(flash) {
+  const from = $("fromSel").value, to = $("toSel").value;
+  const amt = parseAmount();
+  const rFrom = rateOf(from), rTo = rateOf(to);
+  if (!rFrom || !rTo) {
+    $("result").textContent = "–";
+    $("rateLine").textContent = state.rates ? `No rate available for ${from === "IDR" ? to : from}` : "Loading rate…";
+    return;
+  }
+  const value = amt * rFrom / rTo;
+  $("result").textContent = isNaN(value) ? "–" : `${fmt(value, to)} ${to}`;
+  const foreign = from === "IDR" ? to : from;
+  $("rateLine").textContent = `1 ${foreign} = Rp ${fmt(rateOf(foreign), "IDR")} · 1 IDR = ${fmt(1 / rateOf(foreign), foreign)} ${foreign}`;
+  if (flash) { $("result").classList.remove("flash"); void $("result").offsetWidth; $("result").classList.add("flash"); }
+  renderSpark(foreign);
+}
+
+function renderBoard() {
+  $("board").innerHTML = BOARD.filter(c => state.rates[c]).map(c => {
+    const now = state.rates[c], before = state.prev?.[c];
+    let change = "–", cls = "";
+    if (before && before !== now) {
+      const pct = (now - before) / before * 100;
+      cls = pct > 0 ? "up" : "down";
+      change = `${pct > 0 ? "▲" : "▼"} ${Math.abs(pct).toFixed(3)}%`;
+    } else if (before) change = "0.000%";
+    return `<tr><td><b>${c}</b> <span class="small">${CURRENCIES[c]}</span></td>
+      <td class="num">${fmt(now, "IDR")}</td><td class="num ${cls}">${change}</td></tr>`;
+  }).join("");
+}
+
+function renderSpark(code) {
+  const pts = state.history.map(h => h.rates[code]).filter(Boolean);
+  const svg = $("spark");
+  if (pts.length < 2) {
+    svg.innerHTML = "";
+    $("sparkLabel").textContent = "Rate history builds up while this page is open.";
+    return;
+  }
+  const min = Math.min(...pts), max = Math.max(...pts), span = max - min || 1;
+  const d = pts.map((v, i) => `${(i / (pts.length - 1)) * 300},${55 - ((v - min) / span) * 50}`).join(" ");
+  const color = pts.at(-1) >= pts[0] ? "var(--up)" : "var(--down)";
+  svg.innerHTML = `<polyline points="${d}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
+  $("sparkLabel").textContent = `${code}/IDR this session: low Rp ${fmt(min, "IDR")} · high Rp ${fmt(max, "IDR")} · ${pts.length} updates`;
+}
+
+function setStatus(kind, text) {
+  $("dot").className = "dot " + kind;
+  $("statusText").textContent = text;
+}
+
+async function fetchRates() {
+  for (const src of SOURCES) {
+    try {
+      const res = await fetch(src.url, { cache: "no-store" });
+      if (!res.ok) throw new Error(res.status);
+      const { rates, asOf } = src.parse(await res.json());
+      if (!rates.USD) throw new Error("missing USD");
+      const changed = !state.rates || BOARD.some(c => rates[c] !== state.rates[c]);
+      if (state.rates) state.prev = state.rates;
+      state.rates = rates;
+      state.source = src.name;
+      state.history.push({ t: Date.now(), rates });
+      if (state.history.length > 200) state.history.shift();
+      const time = new Date().toLocaleTimeString();
+      setStatus("live", `Live · updated ${time}`);
+      $("source").textContent = `Source: ${src.name}` + (asOf ? ` (provider data as of ${asOf.toLocaleString()})` : "") +
+        ". Rates are mid-market and for reference only; banks and money changers add their own margin.";
+      renderBoard();
+      render(changed);
+      return;
+    } catch (e) {
+      console.warn(`${src.name} failed:`, e);
+    }
+  }
+  setStatus("err", state.rates ? "Update failed, showing last known rate. Retrying…" : "Could not load rates. Retrying…");
+}
+
+function schedule() {
+  clearInterval(state.timer);
+  state.timer = setInterval(fetchRates, parseInt($("interval").value, 10) * 1000);
+}
+
+fillSelects();
+$("amount").addEventListener("input", () => render());
+$("fromSel").addEventListener("change", e => { ensureIdrSide(e.target); store.set("from", $("fromSel").value); store.set("to", $("toSel").value); render(); });
+$("toSel").addEventListener("change", e => { ensureIdrSide(e.target); store.set("from", $("fromSel").value); store.set("to", $("toSel").value); render(); });
+$("swapBtn").addEventListener("click", () => {
+  const f = $("fromSel").value;
+  $("fromSel").value = $("toSel").value; $("toSel").value = f;
+  store.set("from", $("fromSel").value); store.set("to", $("toSel").value);
+  render();
+});
+$("interval").addEventListener("change", () => { store.set("interval", $("interval").value); schedule(); });
+$("refreshBtn").addEventListener("click", fetchRates);
+// Refresh right away when the tab becomes visible again.
+document.addEventListener("visibilitychange", () => { if (!document.hidden) fetchRates(); });
+
+fetchRates();
+schedule();
+</script>
+</body>
+</html>
