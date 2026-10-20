@@ -50,7 +50,7 @@
   table { width: 100%; border-collapse: collapse; font-size: .95rem; }
   td, th { padding: 8px 4px; border-bottom: 1px solid var(--border); text-align: left; }
   th { color: var(--muted); font-weight: 500; font-size: .8rem; }
-  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   svg { width: 100%; height: 60px; display: block; }
   .small { font-size: .8rem; color: var(--muted); }
 </style>
@@ -58,7 +58,7 @@
 <body>
 <main>
   <h1>Rupiah Live Calculator</h1>
-  <p class="sub">Converts between Indonesian Rupiah (IDR) and other currencies, refreshing the rate automatically.</p>
+  <p class="sub">Converts Indonesian Rupiah (IDR) to and from SGD, USD, EUR, JPY, RMB, GBP and AUD, refreshing the rate automatically.</p>
 
   <section class="card">
     <label for="amount" id="fromLabel">Amount</label>
@@ -101,18 +101,24 @@
     </table>
     <p class="small" id="source"></p>
   </section>
+
+  <section class="card">
+    <table>
+      <thead><tr><th>Gold &amp; Bitcoin</th><th class="num">Price (USD)</th><th class="num">24h</th></tr></thead>
+      <tbody id="crypto"><tr><td colspan="3" class="small">Loading prices…</td></tr></tbody>
+    </table>
+    <p class="small" id="cryptoSource"></p>
+  </section>
 </main>
 
 <script>
 // Rates are stored as "IDR per 1 unit of currency".
 const CURRENCIES = {
-  USD: "US Dollar", EUR: "Euro", SGD: "Singapore Dollar", MYR: "Malaysian Ringgit",
-  AUD: "Australian Dollar", JPY: "Japanese Yen", GBP: "British Pound", CNY: "Chinese Yuan",
-  SAR: "Saudi Riyal", KRW: "South Korean Won", HKD: "Hong Kong Dollar", THB: "Thai Baht",
-  INR: "Indian Rupee", PHP: "Philippine Peso", AED: "UAE Dirham", CHF: "Swiss Franc",
-  CAD: "Canadian Dollar", NZD: "New Zealand Dollar", TWD: "Taiwan Dollar", VND: "Vietnamese Dong"
+  SGD: "Singapore Dollar", USD: "US Dollar", EUR: "Euro", JPY: "Japanese Yen",
+  CNY: "Chinese Yuan (RMB)", GBP: "British Pound", AUD: "Australian Dollar"
 };
-const BOARD = ["USD", "EUR", "SGD", "MYR", "AUD", "JPY", "GBP", "CNY", "SAR"];
+const BOARD = Object.keys(CURRENCIES);
+const label = c => c === "CNY" ? "RMB" : c;
 
 // Sources tried in order. Coinbase refreshes fiat rates every minute or so;
 // open.er-api.com is a daily fallback.
@@ -139,7 +145,7 @@ const SOURCES = [
 ];
 
 const $ = id => document.getElementById(id);
-const state = { rates: null, prev: null, history: [], timer: null, source: null };
+const state = { crypto: null, rates: null, prev: null, history: [], timer: null, source: null };
 
 const store = {
   get(k, d) { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
@@ -149,10 +155,12 @@ const store = {
 function fillSelects() {
   const codes = ["IDR", ...Object.keys(CURRENCIES)];
   for (const sel of [$("fromSel"), $("toSel")]) {
-    sel.innerHTML = codes.map(c => `<option value="${c}">${c}</option>`).join("");
+    sel.innerHTML = codes.map(c => `<option value="${c}">${label(c)}</option>`).join("");
   }
-  $("fromSel").value = store.get("from", "USD");
-  $("toSel").value = store.get("to", "IDR");
+  const saved = c => c === "IDR" || c in CURRENCIES;
+  const from = store.get("from", "USD"), to = store.get("to", "IDR");
+  $("fromSel").value = saved(from) ? from : "USD";
+  $("toSel").value = saved(to) ? to : "IDR";
   $("interval").value = store.get("interval", "30");
   ensureIdrSide();
 }
@@ -180,7 +188,7 @@ function parseAmount() {
 }
 
 function fmt(n, code) {
-  const digits = code === "IDR" || code === "JPY" || code === "KRW" || code === "VND"
+  const digits = code === "IDR" || code === "JPY"
     ? (Math.abs(n) < 1 ? 4 : 0)
     : (Math.abs(n) < 0.01 ? 8 : 2);
   return new Intl.NumberFormat("id-ID", { maximumFractionDigits: digits, minimumFractionDigits: Math.min(digits, 2) }).format(n);
@@ -198,9 +206,9 @@ function render(flash) {
     return;
   }
   const value = amt * rFrom / rTo;
-  $("result").textContent = isNaN(value) ? "–" : `${fmt(value, to)} ${to}`;
+  $("result").textContent = isNaN(value) ? "–" : `${fmt(value, to)} ${label(to)}`;
   const foreign = from === "IDR" ? to : from;
-  $("rateLine").textContent = `1 ${foreign} = Rp ${fmt(rateOf(foreign), "IDR")} · 1 IDR = ${fmt(1 / rateOf(foreign), foreign)} ${foreign}`;
+  $("rateLine").textContent = `1 ${label(foreign)} = Rp ${fmt(rateOf(foreign), "IDR")} · 1 IDR = ${fmt(1 / rateOf(foreign), foreign)} ${label(foreign)}`;
   if (flash) { $("result").classList.remove("flash"); void $("result").offsetWidth; $("result").classList.add("flash"); }
   renderSpark(foreign);
 }
@@ -214,7 +222,7 @@ function renderBoard() {
       cls = pct > 0 ? "up" : "down";
       change = `${pct > 0 ? "▲" : "▼"} ${Math.abs(pct).toFixed(3)}%`;
     } else if (before) change = "0.000%";
-    return `<tr><td><b>${c}</b> <span class="small">${CURRENCIES[c]}</span></td>
+    return `<tr><td><b>${label(c)}</b> <span class="small">${CURRENCIES[c]}</span></td>
       <td class="num">${fmt(now, "IDR")}</td><td class="num ${cls}">${change}</td></tr>`;
   }).join("");
 }
@@ -231,7 +239,7 @@ function renderSpark(code) {
   const d = pts.map((v, i) => `${(i / (pts.length - 1)) * 300},${55 - ((v - min) / span) * 50}`).join(" ");
   const color = pts.at(-1) >= pts[0] ? "var(--up)" : "var(--down)";
   svg.innerHTML = `<polyline points="${d}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
-  $("sparkLabel").textContent = `${code}/IDR this session: low Rp ${fmt(min, "IDR")} · high Rp ${fmt(max, "IDR")} · ${pts.length} updates`;
+  $("sparkLabel").textContent = `${label(code)}/IDR this session: low Rp ${fmt(min, "IDR")} · high Rp ${fmt(max, "IDR")} · ${pts.length} updates`;
 }
 
 function setStatus(kind, text) {
@@ -266,9 +274,53 @@ async function fetchRates() {
   setStatus("err", state.rates ? "Update failed, showing last known rate. Retrying…" : "Could not load rates. Retrying…");
 }
 
+// Gold (Tether Gold, XAUT) and Bitcoin priced in USD.
+const ASSETS = [
+  { code: "XAUT", name: "Tether Gold (1 troy oz)", gecko: "tether-gold" },
+  { code: "BTC", name: "Bitcoin", gecko: "bitcoin" }
+];
+const usd = n => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(n);
+
+async function fetchCrypto() {
+  let prices = null, src = "";
+  try {
+    const ids = ASSETS.map(a => a.gecko).join(",");
+    const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true`, { cache: "no-store" });
+    if (!res.ok) throw new Error(res.status);
+    const j = await res.json();
+    prices = ASSETS.map(a => ({ ...a, price: j[a.gecko]?.usd, change: j[a.gecko]?.usd_24h_change }));
+    src = "CoinGecko";
+  } catch (e) {
+    console.warn("CoinGecko failed:", e);
+    // Fallback: Coinbase spot prices (no 24h change).
+    prices = await Promise.all(ASSETS.map(async a => {
+      try {
+        const r = await fetch(`https://api.coinbase.com/v2/prices/${a.code}-USD/spot`, { cache: "no-store" });
+        const j = await r.json();
+        return { ...a, price: parseFloat(j.data.amount) };
+      } catch { return { ...a }; }
+    }));
+    src = "Coinbase";
+  }
+  if (!prices.some(p => p.price)) {
+    if (!state.crypto) $("crypto").innerHTML = `<tr><td colspan="3" class="small">Could not load prices. Retrying…</td></tr>`;
+    return;
+  }
+  state.crypto = prices;
+  $("crypto").innerHTML = prices.map(p => {
+    const ch = typeof p.change === "number"
+      ? `<span class="${p.change >= 0 ? "up" : "down"}">${p.change >= 0 ? "▲" : "▼"} ${Math.abs(p.change).toFixed(2)}%</span>` : "–";
+    return `<tr><td><b>${p.code}</b> <span class="small">${p.name}</span></td>
+      <td class="num">${p.price ? usd(p.price) : "–"}</td><td class="num">${ch}</td></tr>`;
+  }).join("");
+  $("cryptoSource").textContent = `Source: ${src}. XAUT is a token backed by one troy ounce of physical gold, so it tracks the gold price.`;
+}
+
+function tick() { fetchRates(); fetchCrypto(); }
+
 function schedule() {
   clearInterval(state.timer);
-  state.timer = setInterval(fetchRates, parseInt($("interval").value, 10) * 1000);
+  state.timer = setInterval(tick, parseInt($("interval").value, 10) * 1000);
 }
 
 fillSelects();
@@ -282,11 +334,11 @@ $("swapBtn").addEventListener("click", () => {
   render();
 });
 $("interval").addEventListener("change", () => { store.set("interval", $("interval").value); schedule(); });
-$("refreshBtn").addEventListener("click", fetchRates);
+$("refreshBtn").addEventListener("click", tick);
 // Refresh right away when the tab becomes visible again.
-document.addEventListener("visibilitychange", () => { if (!document.hidden) fetchRates(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
 
-fetchRates();
+tick();
 schedule();
 </script>
 </body>
