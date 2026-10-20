@@ -11,7 +11,7 @@ Open `index.html` in a browser. You can also host it on GitHub Pages: go to Sett
 - Rates refresh automatically every 15s, 30s, 1 min or 5 min (you choose). They also refresh when you come back to the tab.
 - The result flashes when the rate changes. The table shows the change (▲/▼) since the last update.
 - A small chart tracks the rate for as long as the page stays open.
-- At the bottom, Tether Gold (XAUT) and Bitcoin (BTC) are priced in USD with their 24-hour change (from CoinGecko, falling back to Coinbase).
+- At the bottom, Tether Gold (XAUT) and Bitcoin (BTC) are priced in USD with their 24-hour change. Prices stream in real time (BTC from Coinbase, XAUT from Bitfinex), with CoinGecko as a polled fallback.
 
 ## Rate sources
 

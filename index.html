@@ -53,6 +53,7 @@
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   svg { width: 100%; height: 60px; display: block; }
   .small { font-size: .8rem; color: var(--muted); }
+  .pill { font-size: .65rem; font-weight: 700; letter-spacing: .06em; color: var(--up); border: 1px solid currentColor; border-radius: 999px; padding: 1px 6px; vertical-align: middle; }
 </style>
 </head>
 <body>
@@ -145,7 +146,7 @@ const SOURCES = [
 ];
 
 const $ = id => document.getElementById(id);
-const state = { crypto: null, rates: null, prev: null, history: [], timer: null, source: null };
+const state = { rates: null, prev: null, history: [], timer: null, source: null };
 
 const store = {
   get(k, d) { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
@@ -275,46 +276,107 @@ async function fetchRates() {
 }
 
 // Gold (Tether Gold, XAUT) and Bitcoin priced in USD.
+// Real-time trade streams (Coinbase for BTC, Bitfinex for XAUT) push every new
+// price; CoinGecko polling fills in the first value and covers stream outages.
 const ASSETS = [
-  { code: "XAUT", name: "Tether Gold (1 troy oz)", gecko: "tether-gold" },
-  { code: "BTC", name: "Bitcoin", gecko: "bitcoin" }
+  { code: "XAUT", name: "Tether Gold (1 troy oz)", gecko: "tether-gold", stream: "Bitfinex" },
+  { code: "BTC", name: "Bitcoin", gecko: "bitcoin", stream: "Coinbase" }
 ];
+const assetState = Object.fromEntries(ASSETS.map(a => [a.code, { price: null, change: null, live: false, dir: 0 }]));
 const usd = n => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(n);
 
+function setAsset(code, price, change, live) {
+  const st = assetState[code];
+  if (!(price > 0)) return;
+  if (st.price && price !== st.price) st.dir = price > st.price ? 1 : -1;
+  st.price = price;
+  if (typeof change === "number") st.change = change;
+  if (live) st.liveAt = Date.now();
+  scheduleCryptoRender();
+}
+
+let cryptoRenderPending = false;
+function scheduleCryptoRender() {
+  if (cryptoRenderPending) return;
+  cryptoRenderPending = true;
+  // Fast streams can send many trades a second; repaint at most ~4 times a second.
+  setTimeout(() => { cryptoRenderPending = false; renderCrypto(); }, 250);
+}
+
+function renderCrypto() {
+  if (!ASSETS.some(a => assetState[a.code].price)) return;
+  const now = Date.now();
+  $("crypto").innerHTML = ASSETS.map(a => {
+    const st = assetState[a.code];
+    const live = st.liveAt && now - st.liveAt < 120000;
+    const ch = typeof st.change === "number"
+      ? `<span class="${st.change >= 0 ? "up" : "down"}">${st.change >= 0 ? "▲" : "▼"} ${Math.abs(st.change).toFixed(2)}%</span>` : "–";
+    const tickCls = st.dir > 0 ? "up" : st.dir < 0 ? "down" : "";
+    return `<tr><td><b>${a.code}</b> ${live ? '<span class="pill">LIVE</span>' : ""}<br><span class="small">${a.name}</span></td>
+      <td class="num ${tickCls}">${st.price ? usd(st.price) : "–"}</td><td class="num">${ch}</td></tr>`;
+  }).join("");
+  const streaming = ASSETS.filter(a => assetState[a.code].liveAt && now - assetState[a.code].liveAt < 120000).map(a => `${a.code} via ${a.stream}`);
+  $("cryptoSource").textContent = (streaming.length ? `Streaming every trade: ${streaming.join(", ")}. ` : "Updating on the refresh timer (CoinGecko). ") +
+    "XAUT is a token backed by one troy ounce of physical gold, so it tracks the gold price. 24h is the change over the last 24 hours.";
+}
+
 async function fetchCrypto() {
-  let prices = null, src = "";
   try {
     const ids = ASSETS.map(a => a.gecko).join(",");
     const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true`, { cache: "no-store" });
     if (!res.ok) throw new Error(res.status);
     const j = await res.json();
-    prices = ASSETS.map(a => ({ ...a, price: j[a.gecko]?.usd, change: j[a.gecko]?.usd_24h_change }));
-    src = "CoinGecko";
+    for (const a of ASSETS) {
+      const st = assetState[a.code];
+      // A live stream is fresher than CoinGecko; only borrow its 24h change if missing.
+      if (st.liveAt && Date.now() - st.liveAt < 120000) { if (st.change == null) st.change = j[a.gecko]?.usd_24h_change; }
+      else setAsset(a.code, j[a.gecko]?.usd, j[a.gecko]?.usd_24h_change, false);
+    }
+    renderCrypto();
   } catch (e) {
     console.warn("CoinGecko failed:", e);
-    // Fallback: Coinbase spot prices (no 24h change).
-    prices = await Promise.all(ASSETS.map(async a => {
-      try {
-        const r = await fetch(`https://api.coinbase.com/v2/prices/${a.code}-USD/spot`, { cache: "no-store" });
-        const j = await r.json();
-        return { ...a, price: parseFloat(j.data.amount) };
-      } catch { return { ...a }; }
-    }));
-    src = "Coinbase";
+    if (!ASSETS.some(a => assetState[a.code].price))
+      $("crypto").innerHTML = `<tr><td colspan="3" class="small">Could not load prices. Retrying…</td></tr>`;
   }
-  if (!prices.some(p => p.price)) {
-    if (!state.crypto) $("crypto").innerHTML = `<tr><td colspan="3" class="small">Could not load prices. Retrying…</td></tr>`;
-    return;
-  }
-  state.crypto = prices;
-  $("crypto").innerHTML = prices.map(p => {
-    const ch = typeof p.change === "number"
-      ? `<span class="${p.change >= 0 ? "up" : "down"}">${p.change >= 0 ? "▲" : "▼"} ${Math.abs(p.change).toFixed(2)}%</span>` : "–";
-    return `<tr><td><b>${p.code}</b> <span class="small">${p.name}</span></td>
-      <td class="num">${p.price ? usd(p.price) : "–"}</td><td class="num">${ch}</td></tr>`;
-  }).join("");
-  $("cryptoSource").textContent = `Source: ${src}. XAUT is a token backed by one troy ounce of physical gold, so it tracks the gold price.`;
 }
+
+// Opens a WebSocket and reconnects with backoff if it drops.
+function openStream(url, onOpen, onMessage) {
+  let ws, delay = 1000;
+  const connect = () => {
+    try { ws = new WebSocket(url); } catch { return setTimeout(connect, delay = Math.min(delay * 2, 30000)); }
+    ws.onopen = () => { delay = 1000; onOpen(ws); };
+    ws.onmessage = e => { try { onMessage(JSON.parse(e.data)); } catch {} };
+    ws.onclose = () => setTimeout(connect, delay = Math.min(delay * 2, 30000));
+    ws.onerror = () => ws.close();
+  };
+  connect();
+  // Phones freeze background tabs; reconnect promptly when the page is shown again.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && ws && ws.readyState > 1) { delay = 1000; connect(); }
+  });
+}
+
+openStream("wss://ws-feed.exchange.coinbase.com",
+  ws => ws.send(JSON.stringify({ type: "subscribe", product_ids: ["BTC-USD"], channels: ["ticker"] })),
+  m => {
+    if (m.type !== "ticker" || m.product_id !== "BTC-USD") return;
+    const price = parseFloat(m.price), open = parseFloat(m.open_24h);
+    setAsset("BTC", price, open > 0 ? (price - open) / open * 100 : undefined, true);
+  });
+
+let xautChan = null;
+openStream("wss://api-pub.bitfinex.com/ws/2",
+  ws => ws.send(JSON.stringify({ event: "subscribe", channel: "ticker", symbol: "tXAUT:USD" })),
+  m => {
+    if (m.event === "subscribed") { xautChan = m.chanId; return; }
+    // Ticker: [chanId, [BID, BID_SIZE, ASK, ASK_SIZE, DAILY_CHANGE, DAILY_CHANGE_RELATIVE, LAST_PRICE, ...]]
+    if (Array.isArray(m) && m[0] === xautChan && Array.isArray(m[1]))
+      setAsset("XAUT", m[1][6], m[1][5] * 100, true);
+  });
+
+// Drop the LIVE badge if a stream goes quiet.
+setInterval(renderCrypto, 10000);
 
 function tick() { fetchRates(); fetchCrypto(); }
 
